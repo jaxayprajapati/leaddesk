@@ -1,0 +1,14 @@
+.env
+.env.local
+.venv/
+__pycache__/
+*.db
+node_modules/
+.next/
+*.tsbuildinfo
+.claude/settings.local.json
+.impeccable/
+# private, never commit
+_private/
+sales/
+frontend/.git-scaffold-backup/

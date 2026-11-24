@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+anthropic
+httpx  # only for test_app.py (FastAPI TestClient)
+python-dotenv  # lets uvicorn load .env (--env-file)
+cryptography  # encrypts connector tokens (Gmail, Outlook, Meta, WhatsApp)
+tzdata  # timezone data for each agency's clock (Windows has none built in)
