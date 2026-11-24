@@ -114,6 +114,7 @@ Turn on **Let the AI carry on the conversation** in **Settings**. After the firs
 
 - answers from the agency's business profile and its own listings only (never invented properties, prices or promises), in the lead's language;
 - saves what it learns (area, property type, budget, timeline, score) to the lead, and alerts the team when a lead turns hot in the chat;
+- **books site visits**: it offers open one-hour times within the agency's **Site visit hours** (Settings), skipping any time the lead's agent already has a visit, and books the one the lead picks, at the listing they chose or the office. Bookings it can't make (outside visit hours, a taken time, a listing the agency doesn't have) are refused and it offers another time. The agent is alerted, and the usual day-before reminders follow;
 - **hands the chat to a person** when the lead asks for one, is upset, wants to negotiate, asks about legal or loan matters, or asks something it can't answer. The agency's alert email/webhook and the assigned agent are told why.
 
 Safeguards: the AI's tools act only on the lead being answered (they take no ids), a person replying from LeadDesk pauses the AI for that lead, any AI or sending failure hands the lead over instead of leaving them unanswered, and the AI sends at most `AGENT_DAILY_REPLIES` (default 20) replies per lead per day. Every message and every change is in the lead's history. On each lead, **Take over** and **Let the AI answer** switch it by hand.

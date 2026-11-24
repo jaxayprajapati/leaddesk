@@ -19,6 +19,8 @@ const SCORES: { key: Score; label: string }[] = [
   { key: "cold", label: "Cold" },
 ]
 
+const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] // index = the backend's weekday (0 = Monday)
+
 /** The owner's agency profile: what the AI knows about the business, and who gets alerts. */
 export function AgencyForm({ agency }: { agency: Agency }) {
   const [errors, setErrors] = useState<string[]>([])
@@ -37,6 +39,9 @@ export function AgencyForm({ agency }: { agency: Agency }) {
         auto_reply: SCORES.map((s) => s.key).filter((k) => f.get(`auto_${k}`)),
         auto_follow_ups: !!f.get("auto_follow_ups"),
         ai_agent: !!f.get("ai_agent"),
+        visit_days: DAYS.map((_, i) => i).filter((i) => f.get(`day_${i}`)),
+        visit_start: v("visit_start"),
+        visit_end: v("visit_end"),
         country: v("country"),
         currency: v("currency").toUpperCase(),
         timezone: v("timezone"),
@@ -103,6 +108,35 @@ export function AgencyForm({ agency }: { agency: Agency }) {
               </span>
             </span>
           </label>
+        </section>
+
+        <section className="space-y-4 rounded-2xl border bg-card p-5 md:p-6">
+          <div>
+            <h2 className="font-semibold">Site visit hours</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              The AI offers one-hour visits in these hours, never over a visit the agent already has, and books the time the lead
+              picks.
+            </p>
+          </div>
+          <fieldset className="flex flex-wrap gap-2">
+            <legend className="sr-only">Visit days</legend>
+            {DAYS.map((d, i) => (
+              <label key={d} className="flex h-9 cursor-pointer items-center gap-2 rounded-full border px-3.5 text-sm has-checked:border-primary has-checked:bg-secondary has-checked:text-secondary-foreground">
+                <Checkbox name={`day_${i}`} defaultChecked={agency.visit_days.includes(i)} />
+                {d}
+              </label>
+            ))}
+          </fieldset>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="visit_start">From</Label>
+              <Input id="visit_start" name="visit_start" type="time" step={1800} defaultValue={agency.visit_start} required className="h-9" />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="visit_end">Until</Label>
+              <Input id="visit_end" name="visit_end" type="time" step={1800} defaultValue={agency.visit_end} required className="h-9" />
+            </div>
+          </div>
         </section>
 
         <section className="space-y-4 rounded-2xl border bg-card p-5 md:p-6">

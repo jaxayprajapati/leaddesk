@@ -151,6 +151,10 @@ export type Agency = {
   auto_reply: Score[]
   auto_follow_ups: boolean
   ai_agent: boolean
+  /** When the AI may book site visits: weekdays (0 = Monday) and "HH:MM" hours, in the agency's timezone. */
+  visit_days: number[]
+  visit_start: string
+  visit_end: string
   country: string
   currency: string
   timezone: string

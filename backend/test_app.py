@@ -557,6 +557,48 @@ with app.db() as conn:
     conn.execute("UPDATE leads SET last_inbound_at=? WHERE id=?", ((datetime.now(timezone.utc) - timedelta(days=2)).isoformat(), mid))
 c.post(f"/api/leads/{mid}/send", json={"text": "Any update?", "kind": "followup"}, headers=ha)
 assert wa_sent()["type"] == "template", "the 24-hour window has closed"
+
+# ---------- The AI books site visits ----------
+assert c.patch("/api/agency", json={"visit_days": []}, headers=ha).status_code == 422
+assert c.patch("/api/agency", json={"visit_days": [7]}, headers=ha).status_code == 422
+assert c.patch("/api/agency", json={"visit_start": "19:00"}, headers=ha).status_code == 422, "end before start"
+assert c.patch("/api/agency", json={"visit_end": "25:00"}, headers=ha).status_code == 422
+s = c.patch("/api/agency", json={"visit_days": [6, 0, 1, 2, 3, 4, 5], "visit_start": "09:00", "visit_end": "12:00"},
+            headers=ha).json()["agency"]
+assert s["visit_days"] == [0, 1, 2, 3, 4, 5, 6] and (s["visit_start"], s["visit_end"]) == ("09:00", "12:00")
+assert c.get("/api/settings", headers=hb).json()["agency"]["visit_start"] == "10:00", "B keeps its own hours"
+wa_msg("Looking for a 2BHK in Riverside", "wamid.v1", sender="919000077777", name="Ishaan Rao")
+iid = c.get("/api/leads?view=all&q=Ishaan", headers=ha).json()["leads"][0]["id"]
+with app.db() as conn:
+    row = conn.execute("SELECT * FROM leads WHERE id=?", (iid,)).fetchone()
+    slots = app.free_slots(conn, row)
+kolkata = app.zone("Asia/Kolkata")
+assert 0 < len(slots) <= 8 and all(9 <= t.astimezone(kolkata).hour < 12 and t.minute == 0 for t in slots)
+assert slots[0] >= datetime.now(timezone.utc) + timedelta(hours=2) and slots == sorted(slots)
+
+script[:] = [uses("find_visit_slots", from_date=None), says("I can do these times: ...")]
+wa_msg("Can I see it?", "wamid.v2", sender="919000077777", name="Ishaan Rao")
+offered = agent_calls[-1][1][-1]["content"][0]["content"].splitlines()
+assert offered[0].startswith(slots[0].isoformat()) and "AM" in offered[0]
+script[:] = [uses("book_visit", slot="2030-01-01T03:00:00+05:30", listing_ref="SR-1"),
+             uses("book_visit", slot=offered[0], listing_ref="SR-9"),
+             uses("book_visit", slot=offered[0], listing_ref="SR-1"), says("Booked, see you then.")]
+n_mail = len(sent_emails)
+wa_msg("The first one works", "wamid.v3", sender="919000077777", name="Ishaan Rao")
+results = [m["content"][0] for m in agent_calls[-1][1] if m["role"] == "user" and isinstance(m["content"], list)]
+assert [r["is_error"] for r in results] == [True, True, False], "outside visit hours, unknown listing, then booked"
+vl = get(iid)
+assert vl["stage"] == "visit" and vl["visit_status"] == "booked" and vl["visit_place"] == "Lake View 2BHK, Riverside", \
+    "A's own SR-1, never B's"
+assert datetime.fromisoformat(vl["visit_at"]) == slots[0] and wa_sent()["text"]["body"] == "Booked, see you then."
+assert "Site visit booked" in sent_emails[-1]["Subject"] and len(sent_emails) > n_mail
+visit_ev = [e for e in c.get(f"/api/leads/{iid}/events", headers=ha).json() if e["kind"] == "visit"][-1]
+assert visit_ev["actor"] == "LeadDesk" and visit_ev["meta"]["place"] == "Lake View 2BHK, Riverside"
+with app.db() as conn:  # that hour is now taken for the same agent, and while unassigned; free for a different agent
+    other = dict(conn.execute("SELECT * FROM leads WHERE agency_id=? AND id!=? LIMIT 1", (aid, iid)).fetchone())
+    assert slots[0] not in app.free_slots(conn, {**other, "agent_id": vl["agent_id"]})
+    assert slots[0] not in app.free_slots(conn, {**other, "agent_id": None})
+    assert slots[0] in app.free_slots(conn, {**other, "agent_id": -1}, limit=50)
 c.patch("/api/agency", json={"ai_agent": False}, headers=ha)
 
 # ---------- Reports ----------

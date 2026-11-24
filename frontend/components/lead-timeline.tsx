@@ -138,7 +138,7 @@ function Note({ event: e }: { event: LeadEvent }) {
             <>
               Site visit booked for <LocalTime iso={String(m.at)} />
               {m.place ? ` at ${m.place}` : ""}
-              {by(e.actor)}
+              {e.actor === AUTO ? " by the AI in the chat" : by(e.actor)}
               {e.body ? `. Note: ${e.body}` : ""}
             </>
           ),

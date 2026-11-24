@@ -163,6 +163,7 @@ OAuthKind = Literal["gmail", "outlook", "meta"]
 Kind = Literal["gmail", "outlook", "meta", "whatsapp"]
 USERNAME = r"^[A-Za-z0-9._-]+$"
 EMAIL = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+HHMM = r"^([01]\d|2[0-3]):[0-5]\d$"
 
 
 class StageIn(BaseModel):
@@ -239,6 +240,9 @@ class AgencyPatch(BaseModel):
     auto_reply: list[Score] | None = None
     auto_follow_ups: bool | None = None
     ai_agent: bool | None = None
+    visit_days: list[int] | None = Field(default=None, max_length=7)
+    visit_start: str | None = Field(default=None, pattern=HHMM)
+    visit_end: str | None = Field(default=None, pattern=HHMM)
     country: str | None = Field(default=None, pattern=r"^[A-Z]{2}$")
     currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
     timezone: str | None = Field(default=None, max_length=64)
@@ -332,7 +336,9 @@ with db() as conn:
         )"""
     )
     have = cols(conn, "agencies")  # agencies from before regions existed were Indian
-    for col, default in [("country", "IN"), ("currency", "INR"), ("timezone", "Asia/Kolkata"), ("calling_code", "91")]:
+    for col, default in [("country", "IN"), ("currency", "INR"), ("timezone", "Asia/Kolkata"), ("calling_code", "91"),
+                         # When the AI may book site visits: weekdays (0 = Monday) and hours, in the agency's timezone
+                         ("visit_days", "0,1,2,3,4,5"), ("visit_start", "10:00"), ("visit_end", "18:00")]:
         if col not in have:
             conn.execute(f"ALTER TABLE agencies ADD COLUMN {col} TEXT NOT NULL DEFAULT '{default}'")
     if "ai_agent" not in have:  # 1: the AI carries on chat conversations with leads (off until the owner turns it on)
@@ -902,6 +908,8 @@ Your job: answer their questions from the business profile and the listings, fin
 
 Tools:
 - update_lead: whenever the lead tells you something new about what they want (area, property type, budget, timeline), or their intent clearly changes, save it. Only what they actually said; never guess.
+- find_visit_slots: when the lead wants to see a property, get the open times and offer two or three of them. Never offer a time it didn't return.
+- book_visit: once the lead clearly picks one of those times, book it, then confirm the day, time and place in your reply. To move a booked visit, book the new time the same way.
 - hand_off: hand the conversation to a person when the lead asks for a human, is upset or complaining, wants to negotiate price or terms, asks about legal, loan or tax matters, asks something the business profile and listings can't answer, or the chat is going in circles. After hand_off, tell the lead in one short sentence that a team member will reply soon.
 
 How to write:
@@ -929,6 +937,16 @@ AGENT_TOOLS = [
          "budget": {**_NULLABLE, "description": "As the lead wrote it"},
          "timeline": {**_NULLABLE, "description": "When they want to move, buy or sell"},
          "summary": {**_NULLABLE, "description": "One updated sentence for the sales team, when something important changed"}}}},
+    {"name": "find_visit_slots", "strict": True,
+     "description": "Open times for a site visit: within the agency's visit hours and free in the agent's diary.",
+     "input_schema": {"type": "object", "additionalProperties": False, "required": ["from_date"], "properties": {
+         "from_date": {**_NULLABLE, "description": "YYYY-MM-DD to search from when the lead asked for a particular day or "
+                                                   "week; null for the soonest times"}}}},
+    {"name": "book_visit", "strict": True,
+     "description": "Book the site visit at a time the lead picked from find_visit_slots.",
+     "input_schema": {"type": "object", "additionalProperties": False, "required": ["slot", "listing_ref"], "properties": {
+         "slot": {"type": "string", "description": "The time exactly as find_visit_slots returned it (the ISO part)"},
+         "listing_ref": {**_NULLABLE, "description": "Ref from <listings> of the property to visit; null to meet at the office"}}}},
     {"name": "hand_off", "strict": True,
      "description": "Hand the conversation to a person at the agency. The AI stops replying to this lead.",
      "input_schema": {"type": "object", "additionalProperties": False, "required": ["reason"], "properties": {
@@ -988,11 +1006,78 @@ def hand_off(lead, reason: str) -> None:
            {"handoff": {"lead_id": lead["id"], "name": lead["name"], "reason": reason, "url": link}})
 
 
+VISIT_MINUTES = 60  # length of a site visit, and the step between offered times
+
+
+def save_visit(conn, lead_id: int, at: str, place: str, note: str | None, actor: str) -> None:
+    """Book (or move) the lead's site visit; the day-before reminders follow it."""
+    conn.execute(
+        """UPDATE leads SET stage='visit', visit_at=?, visit_place=?, visit_note=?, visit_status='booked', visit_reminded_at=NULL,
+           contacted_at=COALESCE(contacted_at, ?) WHERE id=?""", (at, place, note, utcnow(), lead_id))
+    log_event(conn, lead_id, "visit", actor=actor, body=note, at=at, place=place)
+
+
+def free_slots(conn, lead, from_day=None, limit: int = 8) -> list[datetime]:
+    """Visit times in the agency's visit hours over the next 14 days, at least 2 hours ahead, that don't clash with a
+    visit already booked for the lead's agent (or any of the agency's, while the lead has no agent)."""
+    g = conn.execute("SELECT timezone, visit_days, visit_start, visit_end FROM agencies WHERE id=?", (lead["agency_id"],)).fetchone()
+    tz, step = zone(g["timezone"]), timedelta(minutes=VISIT_MINUTES)
+    now = datetime.now(tz)
+    busy = [datetime.fromisoformat(r[0]) for r in conn.execute(
+        """SELECT visit_at FROM leads WHERE agency_id=? AND id!=? AND visit_status='booked' AND (? IS NULL OR agent_id=?)""",
+        (lead["agency_id"], lead["id"], lead["agent_id"], lead["agent_id"]))]
+    days = {int(d) for d in g["visit_days"].split(",") if d}
+    (sh, sm), (eh, em) = (map(int, g[k].split(":")) for k in ("visit_start", "visit_end"))
+    first, out = max(from_day or now.date(), now.date()), []
+    for i in range(14):
+        d = first + timedelta(days=i)
+        if d.weekday() not in days:
+            continue
+        t, end = (datetime(d.year, d.month, d.day, h, m, tzinfo=tz) for h, m in ((sh, sm), (eh, em)))
+        while t + step <= end:
+            if t >= now + timedelta(hours=2) and all(abs(t - b) >= step for b in busy):
+                out.append(t)
+                if len(out) == limit:
+                    return out
+            t += step
+    return out
+
+
+def visit_tool(lead, name: str, args: dict) -> str:
+    """find_visit_slots and book_visit. Bookings must be a time free_slots offers right now, so the AI can't book outside
+    visit hours or over another visit, and the place comes from the agency's own listings."""
+    with db() as conn:
+        if name == "find_visit_slots":
+            day = datetime.strptime(args["from_date"], "%Y-%m-%d").date() if args.get("from_date") else None
+            slots = free_slots(conn, lead, day)
+            return "\n".join(f"{t.isoformat()} ({t.strftime('%A %d %b, %I:%M %p')})" for t in slots) or \
+                "No open times in the next two weeks. Hand off so the team can arrange a time."
+        at = datetime.fromisoformat(str(args["slot"]).split(" ")[0])
+        if at not in free_slots(conn, lead, at.date(), limit=200):
+            raise ValueError("That time isn't open. Call find_visit_slots and offer one of the times it returns.")
+        ref = args.get("listing_ref")
+        listing = conn.execute("SELECT title, location FROM listings WHERE agency_id=? AND ref=?",
+                               (lead["agency_id"], ref)).fetchone() if ref else None
+        if ref and not listing:
+            raise ValueError(f"No listing {ref}. Use a ref from <listings>, or null for the office.")
+        place = f"{listing['title']}, {listing['location']}" if listing else "Our office"
+        utc = at.astimezone(timezone.utc).isoformat(timespec="seconds")
+        save_visit(conn, lead["id"], utc, place, f"Booked by the AI in the chat{f' for {ref}' if ref else ''}", AUTO)
+    label = at.strftime("%A %d %b at %I:%M %p")
+    link = f"{DASHBOARD_URL}/leads?view=visits&id={lead['id']}"
+    notify(lead["id"], f"Site visit booked: {lead['name']}, {label}",
+           f"The AI booked a site visit with {lead['name']} ({lead['contact']}): {label}, {place}\n{link}",
+           {"visit": {"lead_id": lead["id"], "name": lead["name"], "at": utc, "place": place, "url": link}})
+    return f"Booked: {label}, {place}. Confirm the day, time and place to the lead."
+
+
 def run_tool(lead, name: str, args: dict) -> str:
     """Do what the AI asked, for this lead only: the tools take no ids, so it can't reach another lead or agency."""
     if name == "hand_off":
         hand_off(lead, str(args.get("reason") or "The AI asked for a person")[:300])
         return "Handed over. Tell the lead in one short sentence that a team member will reply soon."
+    if name in ("find_visit_slots", "book_visit"):
+        return visit_tool(lead, name, args)
     if name != "update_lead":
         raise ValueError(f"Unknown tool {name}")
     changes = {k: str(v)[:500] for k, v in args.items() if k in LEAD_FIELDS and v not in (None, "")}
@@ -1868,10 +1953,7 @@ def book_visit(lead_id: int, body: VisitIn, ctx: Ctx = Depends(current_user)):
     at = body.at.astimezone(timezone.utc).isoformat(timespec="seconds")
     with db() as conn:
         visible_lead(conn, lead_id, ctx)
-        conn.execute(
-            """UPDATE leads SET stage='visit', visit_at=?, visit_place=?, visit_note=?, visit_status='booked', visit_reminded_at=NULL,
-               contacted_at=COALESCE(contacted_at, ?) WHERE id=?""", (at, body.place, body.note, utcnow(), lead_id))
-        log_event(conn, lead_id, "visit", actor=ctx.name, body=body.note, at=at, place=body.place)
+        save_visit(conn, lead_id, at, body.place, body.note, ctx.name)
         return enrich(conn, ctx.agency, [visible_lead(conn, lead_id, ctx)])[0]
 
 
@@ -2013,6 +2095,8 @@ def settings(ctx: Ctx = Depends(current_user)):
     return {"agency": {"name": a["name"], "business": a["business"], "alert_email": a["alert_email"],
                        "alert_webhook": a["alert_webhook"], "auto_reply": [s for s in a["auto_reply"].split(",") if s],
                        "auto_follow_ups": bool(a["auto_follow_ups"]), "ai_agent": bool(a["ai_agent"]),
+                       "visit_days": [int(d) for d in a["visit_days"].split(",") if d],
+                       "visit_start": a["visit_start"], "visit_end": a["visit_end"],
                        "country": a["country"], "currency": a["currency"],
                        "timezone": a["timezone"], "calling_code": a["calling_code"]},
             "model": MODEL, "ai_configured": bool(env("ANTHROPIC_API_KEY")), "email_alerts": bool(SMTP_HOST),
@@ -2025,7 +2109,7 @@ def update_agency(body: AgencyPatch, ctx: Ctx = Depends(owner)):
     for k in ("name", "business"):
         if k in changes and not (changes[k] or "").strip():
             raise HTTPException(422, f"{k.capitalize()} can't be empty")
-    for k in ("country", "currency", "timezone", "calling_code"):
+    for k in ("country", "currency", "timezone", "calling_code", "visit_start", "visit_end"):
         if k in changes and not changes[k]:
             raise HTTPException(422, f"{k.replace('_', ' ').capitalize()} can't be empty")
     if changes.get("timezone") and not valid_zone(changes["timezone"]):
@@ -2040,6 +2124,15 @@ def update_agency(body: AgencyPatch, ctx: Ctx = Depends(owner)):
     for k in ("auto_follow_ups", "ai_agent"):
         if k in changes:
             changes[k] = int(bool(changes[k]))
+    if "visit_days" in changes:
+        days = sorted(set(changes["visit_days"] or []))
+        if not days or not all(0 <= d <= 6 for d in days):
+            raise HTTPException(422, "Visit days: pick at least one day of the week")
+        changes["visit_days"] = ",".join(map(str, days))
+    with db() as conn:
+        a = conn.execute("SELECT visit_start, visit_end FROM agencies WHERE id=?", (ctx.agency,)).fetchone()
+    if changes.get("visit_start", a["visit_start"]) >= changes.get("visit_end", a["visit_end"]):  # "HH:MM" sorts as time
+        raise HTTPException(422, "Visit hours: the end must be after the start")
     if changes:
         sets = ", ".join(f"{k}=?" for k in changes)  # keys are AgencyPatch field names, never user input
         with db() as conn:
