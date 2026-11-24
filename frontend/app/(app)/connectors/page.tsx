@@ -88,6 +88,14 @@ export default async function ConnectorsPage({ searchParams }: { searchParams: P
               {d.available.whatsapp ? <WhatsAppForm current={d.connectors.whatsapp} /> : <Unavailable />}
             </Card>
             <Card
+              icon={<MessageCircleIcon />}
+              title="Website chat"
+              status="on"
+              description="A chat button for your website. Visitors leave their name and number, then the AI (with it on in Settings) or your team answers them right there. Paste this line before </body> on every page."
+            >
+              <CopyField value={d.widget} label="Embed code" />
+            </Card>
+            <Card
               icon={<CodeIcon />}
               title="Website form and Zapier"
               status="on"

@@ -36,7 +36,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import anthropic
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, Response
 from pydantic import BaseModel, Field
 
 HERE = Path(__file__).parent
@@ -269,6 +269,13 @@ class ListingsIn(BaseModel):
     csv: str = Field(max_length=2_000_000)
 
 
+class WidgetIn(BaseModel):
+    visitor: str = Field(pattern=r"^[A-Za-z0-9-]{16,64}$")  # random id the widget keeps in the visitor's browser
+    text: str = Field(min_length=1, max_length=1000)
+    name: str | None = Field(default=None, max_length=100)      # asked once, before the first message
+    contact: str | None = Field(default=None, max_length=200)
+
+
 def db():
     conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
@@ -309,10 +316,10 @@ def create_agency(conn, name: str, business: str | None = None, region: "Region 
     for _ in range(5):  # the random suffix makes the email address unguessable and, almost always, unique
         try:
             return conn.execute(
-                """INSERT INTO agencies (name, slug, intake_key, business, country, currency, timezone, calling_code, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (name, f"{base}-{secrets.token_hex(2)}", secrets.token_urlsafe(24), business or new_profile(name),
-                 r.country, r.currency, r.timezone, r.calling_code, utcnow()),
+                """INSERT INTO agencies (name, slug, intake_key, widget_key, business, country, currency, timezone, calling_code,
+                                        created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (name, f"{base}-{secrets.token_hex(2)}", secrets.token_urlsafe(24), secrets.token_urlsafe(12),
+                 business or new_profile(name), r.country, r.currency, r.timezone, r.calling_code, utcnow()),
             ).lastrowid
         except sqlite3.IntegrityError:
             continue
@@ -343,6 +350,11 @@ with db() as conn:
             conn.execute(f"ALTER TABLE agencies ADD COLUMN {col} TEXT NOT NULL DEFAULT '{default}'")
     if "ai_agent" not in have:  # 1: the AI carries on chat conversations with leads (off until the owner turns it on)
         conn.execute("ALTER TABLE agencies ADD COLUMN ai_agent INTEGER NOT NULL DEFAULT 0")
+    if "widget_key" not in have:  # public id in the website chat widget's embed code (not a secret, unlike intake_key)
+        conn.execute("ALTER TABLE agencies ADD COLUMN widget_key TEXT")
+    for (agency_id,) in conn.execute("SELECT id FROM agencies WHERE widget_key IS NULL").fetchall():
+        conn.execute("UPDATE agencies SET widget_key=? WHERE id=?", (secrets.token_urlsafe(12), agency_id))
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS agencies_widget_key ON agencies(widget_key)")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS connectors (
             id INTEGER PRIMARY KEY AUTOINCREMENT, agency_id INTEGER NOT NULL,
@@ -518,7 +530,7 @@ class Ctx(NamedTuple):
 
 
 AUTO = "LeadDesk"  # the actor for automatic steps in a lead's history
-VIA_LABEL = {"whatsapp": "WhatsApp", "instagram": "Instagram", "messenger": "Messenger"}
+VIA_LABEL = {"whatsapp": "WhatsApp", "instagram": "Instagram", "messenger": "Messenger", "web": "Website chat"}
 
 
 def log_event(conn, lead_id: int, what: str, *, actor: str | None = None, channel: str | None = None,
@@ -657,9 +669,12 @@ def pick_agent(conn, agency_id: int, location: str | None) -> int | None:
 
 def process_lead(lead_id: int) -> None:
     with db() as conn:
-        row = conn.execute("SELECT agency_id, name, contact, message FROM leads WHERE id=?", (lead_id,)).fetchone()
+        row = conn.execute("SELECT agency_id, name, contact, message, channel FROM leads WHERE id=?", (lead_id,)).fetchone()
         agency = row["agency_id"]
         business = conn.execute("SELECT business FROM agencies WHERE id=?", (agency,)).fetchone()[0]
+        if row["channel"] == "web":  # they're waiting in the chat window, so a letter-style reply reads oddly
+            business += ("\n\nThis enquiry came through the chat on our website: write the reply as a short chat message, "
+                         "without a greeting line or sign-off.")
         listings = listings_block(conn, agency)
     lead = LeadIn.model_construct(name=row["name"], contact=row["contact"], message=row["message"])  # merged text may be long
     result = None
@@ -849,7 +864,9 @@ def send_dm(agency_id: int, page_id: str, recipient: str, text: str) -> None:
 
 
 def send_via(lead, kinds: set[str]) -> str | None:
-    """How LeadDesk can message this lead: in their Instagram/Messenger chat, else WhatsApp, else not at all."""
+    """How LeadDesk can message this lead: in their website, Instagram or Messenger chat, else WhatsApp, else not at all."""
+    if lead["channel"] == "web":
+        return "web"
     if lead["channel"] in ("instagram", "messenger"):
         return lead["channel"] if "meta" in kinds else None
     return "whatsapp" if "whatsapp" in kinds and wa_number(lead["contact"]) else None
@@ -869,6 +886,8 @@ def deliver(lead, text: str) -> str:
         send_dm(lead["agency_id"], lead["channel_page"], lead["channel_user"], text)
     elif via == "whatsapp":
         send_whatsapp(lead["agency_id"], lead["contact"], lead["name"], text, free_form=window_open(lead))
+    elif via == "web":
+        pass  # the caller records it in the lead's history, which is what the website chat widget shows
     else:
         raise RuntimeError("LeadDesk can't message this lead yet: connect WhatsApp Business (or Facebook and Instagram for DM leads)")
     return via
@@ -880,7 +899,9 @@ def auto_reply(lead_id: int, r: LeadResult) -> None:
         lead = conn.execute("SELECT l.*, g.auto_reply FROM leads l JOIN agencies g ON g.id=l.agency_id WHERE l.id=?",
                             (lead_id,)).fetchone()
         via = send_via(lead, connected(conn, lead["agency_id"]))
-    if not via or r.score not in lead["auto_reply"].split(",") or lead["stage"] != "new" or lead["auto_replied_at"]:
+    # Someone waiting in the website chat always gets an answer; other channels follow the agency's chosen scores.
+    if not via or (via != "web" and r.score not in lead["auto_reply"].split(",")) or lead["stage"] != "new" \
+            or lead["auto_replied_at"]:
         return
     try:
         deliver(lead, r.reply)
@@ -1170,7 +1191,7 @@ def handle_incoming(lead_id: int, merged: bool) -> None:
     otherwise the message is read as an enquiry, as before."""
     with db() as conn:
         conn.execute("UPDATE leads SET last_inbound_at=? WHERE id=?", (utcnow(), lead_id))
-        r = conn.execute("""SELECT l.name, l.contact, l.ai_mode, l.score, l.contacted_at, g.ai_agent FROM leads l
+        r = conn.execute("""SELECT l.name, l.contact, l.channel, l.ai_mode, l.score, l.contacted_at, g.ai_agent FROM leads l
                             JOIN agencies g ON g.id=l.agency_id WHERE l.id=?""", (lead_id,)).fetchone()
         talking = bool(merged and r["ai_agent"] and r["ai_mode"] == "on" and r["score"] and r["contacted_at"])
         if talking:  # save_lead queued it for re-reading; the AI updates the details itself instead
@@ -1179,7 +1200,8 @@ def handle_incoming(lead_id: int, merged: bool) -> None:
     if talking:
         return converse(lead_id)
     process_lead(lead_id)
-    if merged and r["ai_agent"] and r["ai_mode"] != "on":  # a person has this chat, so make sure they see the reply
+    # A person has this chat, or someone is waiting in the website chat with no AI answering: make sure the team sees it.
+    if merged and ((r["ai_agent"] and r["ai_mode"] != "on") or r["channel"] == "web"):
         link = f"{DASHBOARD_URL}/leads?id={lead_id}"
         notify(lead_id, f"{r['name']} wrote back: reply in LeadDesk", f"{r['name']} ({r['contact']}) wrote:\n{text}\n\n{link}",
                {"message": {"lead_id": lead_id, "name": r["name"], "text": text, "url": link}})
@@ -1884,6 +1906,89 @@ async def meta_events(request: Request, tasks: BackgroundTasks):
     return {"ok": True}
 
 
+# ---------- Endpoints: website chat widget (public; embedded on agencies' own sites) ----------
+
+WIDGET_NEW_CHATS_PER_HOUR = int(env("WIDGET_NEW_CHATS_PER_HOUR", "30"))  # per agency: each new chat costs an AI call
+WIDGET_MESSAGES_PER_DAY = int(env("WIDGET_MESSAGES_PER_DAY", "40"))      # per visitor
+
+
+@app.middleware("http")
+async def widget_cors(request: Request, call_next):
+    """The widget runs on agencies' own websites, so only its endpoints answer browsers from any origin."""
+    if not request.url.path.startswith("/widget"):
+        return await call_next(request)
+    resp = Response(status_code=204) if request.method == "OPTIONS" else await call_next(request)
+    resp.headers.update({"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, POST",
+                         "Access-Control-Allow-Headers": "Content-Type"})
+    return resp
+
+
+def widget_agency(conn, key: str):
+    row = conn.execute("SELECT id, name FROM agencies WHERE widget_key=?", (key,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "Unknown chat")
+    return row
+
+
+def widget_lead(conn, agency_id: int, visitor: str):
+    """The visitor's latest chat with this agency (a closed one too, so a returning visitor keeps their name)."""
+    return conn.execute("SELECT * FROM leads WHERE agency_id=? AND channel='web' AND channel_user=? ORDER BY id DESC LIMIT 1",
+                        (agency_id, visitor)).fetchone()
+
+
+@app.get("/widget.js")
+def widget_script():
+    return FileResponse(HERE / "widget.js", media_type="text/javascript", headers={"Cache-Control": "public, max-age=300"})
+
+
+@app.get("/widget/{key}")
+def widget_info(key: str):
+    with db() as conn:
+        return {"agency": widget_agency(conn, key)["name"]}
+
+
+@app.get("/widget/{key}/messages")
+def widget_messages(key: str, visitor: str = Query(pattern=r"^[A-Za-z0-9-]{16,64}$"), after: int = 0):
+    """The visitor's own chat: their messages and the agency's replies, nothing else from the lead."""
+    with db() as conn:
+        lead = widget_lead(conn, widget_agency(conn, key)["id"], visitor)
+        if lead is None:
+            return {"started": False, "messages": []}
+        rows = conn.execute("""SELECT e.id, e.kind, e.body, e.at FROM events e JOIN leads l ON l.id=e.lead_id
+                               WHERE l.agency_id=? AND l.channel='web' AND l.channel_user=? AND e.kind IN ('in','out')
+                               AND e.body IS NOT NULL AND e.id > ? ORDER BY e.id LIMIT 200""",
+                            (lead["agency_id"], visitor, after)).fetchall()
+    return {"started": True, "messages": [{"id": r["id"], "from": "you" if r["kind"] == "in" else "agency", "text": r["body"],
+                                           "at": r["at"]} for r in rows]}
+
+
+@app.post("/widget/{key}/messages", status_code=202)
+def widget_message(key: str, body: WidgetIn, tasks: BackgroundTasks):
+    """A visitor writes in the chat. The first message starts a lead (with the name and phone or email they give);
+    the rest join it, and the AI or the team answers in the chat."""
+    with db() as conn:
+        agency_id = widget_agency(conn, key)["id"]
+        last = widget_lead(conn, agency_id, body.visitor)
+        if last and conn.execute("""SELECT COUNT(*) FROM events WHERE lead_id=? AND kind='in'
+                                    AND julianday(at) > julianday('now', '-1 day')""", (last["id"],)).fetchone()[0] >= WIDGET_MESSAGES_PER_DAY:
+            raise HTTPException(429, "That's a lot of messages for one day. The team will be in touch.")
+        if not (last and last["stage"] in ("new", "contacted", "visit")):
+            name = (body.name or (last["name"] if last else "")).strip()
+            contact = (body.contact or (last["contact"] if last else "")).strip()
+            if not name or len(contact) < 5:
+                raise HTTPException(422, "Please add your name and a phone number or email, so the team can reach you.")
+            if conn.execute("""SELECT COUNT(*) FROM leads WHERE agency_id=? AND channel='web'
+                               AND julianday(created_at) > julianday('now', '-1 hour')""",
+                            (agency_id,)).fetchone()[0] >= WIDGET_NEW_CHATS_PER_HOUR:
+                raise HTTPException(429, "The chat is very busy right now. Please try again in a little while.")
+        else:
+            name, contact = last["name"], last["contact"]
+    lead = LeadIn.model_construct(name=name, contact=contact, message=body.text)
+    lead_id, merged = save_lead(agency_id, lead, "Website chat", key=f"web:{body.visitor}", channel=("web", body.visitor, None))
+    tasks.add_task(handle_incoming, lead_id, merged)  # the AI reply arrives on the widget's next check
+    return {"ok": True}
+
+
 @app.post("/api/leads", status_code=202, dependencies=Api)
 def add_lead(lead: LeadIn, tasks: BackgroundTasks, ctx: Ctx = Depends(current_user)):
     """Leads added by hand in the dashboard (phone calls, walk-ins). An agent's own leads stay with them."""
@@ -2154,7 +2259,7 @@ def update_agency(body: AgencyPatch, ctx: Ctx = Depends(owner)):
 @app.get("/api/connectors", dependencies=Api)
 def list_connectors(ctx: Ctx = Depends(owner)):
     with db() as conn:
-        a = conn.execute("SELECT slug, intake_key FROM agencies WHERE id=?", (ctx.agency,)).fetchone()
+        a = conn.execute("SELECT slug, intake_key, widget_key FROM agencies WHERE id=?", (ctx.agency,)).fetchone()
         rows = conn.execute("SELECT kind, account, config, error, last_sync_at, created_at, secret IS NOT NULL AS ok "
                             "FROM connectors WHERE agency_id=?", (ctx.agency,)).fetchall()
         inbox = conn.execute("""SELECT id, channel, received_at, sender, subject, snippet, outcome, lead_id FROM inbox
@@ -2166,6 +2271,7 @@ def list_connectors(ctx: Ctx = Depends(owner)):
                                    "last_sync_at": r["last_sync_at"], "connected_at": r["created_at"]} for r in rows if r["ok"]},
         "inbound_address": f"{a['slug']}@{INBOUND_DOMAIN}" if INBOUND_DOMAIN else None,
         "intake": {"url": f"{PUBLIC_API_URL}/webhook/lead", "key": a["intake_key"]},
+        "widget": f'<script src="{PUBLIC_API_URL}/widget.js" data-leaddesk="{a["widget_key"]}" async></script>',
         "default_senders": DEFAULT_SENDERS,
         "inbox": [dict(r) for r in inbox],
     }

@@ -63,6 +63,7 @@ Each agency connects its own sources on **Connectors**. You, the LeadDesk operat
 | **LeadDesk email address** | Forward lead emails to `their-agency-xxxx@<INBOUND_DOMAIN>`, or set it as the lead email in each portal | Every email sent there |
 | **Facebook and Instagram** | Click Connect with Facebook, choose their Page | Lead ad forms (Facebook and Instagram ads), Instagram DMs, Messenger messages |
 | **WhatsApp Business** | Paste their phone number ID and access token | Nothing in; replies, follow-ups and visit reminders go out |
+| **Website chat** | Paste the one-line embed code from Connectors on their website | Chats: the visitor gives a name and phone or email, then the AI (if on) or the team answers in the chat |
 | **Website form and Zapier** | POST JSON to `/webhook/lead` with their key in `X-Webhook-Secret` | Website and Zapier leads |
 
 How the pieces behave:
@@ -118,6 +119,10 @@ Turn on **Let the AI carry on the conversation** in **Settings**. After the firs
 - **hands the chat to a person** when the lead asks for one, is upset, wants to negotiate, asks about legal or loan matters, or asks something it can't answer. The agency's alert email/webhook and the assigned agent are told why.
 
 Safeguards: the AI's tools act only on the lead being answered (they take no ids), a person replying from LeadDesk pauses the AI for that lead, any AI or sending failure hands the lead over instead of leaving them unanswered, and the AI sends at most `AGENT_DAILY_REPLIES` (default 20) replies per lead per day. Every message and every change is in the lead's history. On each lead, **Take over** and **Let the AI answer** switch it by hand.
+
+### Website chat
+
+`backend/widget.js` is a chat button any agency adds with one line (Connectors shows it with the agency's public widget key). It works on any site: its styles live in a shadow root, and only the `/widget/*` endpoints accept calls from other origins. A visitor's first message asks for their name and phone or email and becomes a lead (source *Website chat*); the reply shows in the chat window, which checks for new messages every 3 seconds while open. Visitors only ever see their own chat. A visitor waiting in the chat always gets the first reply, whatever its score; after that the AI answers (if on), and otherwise every message alerts the team. Limits against abuse: `WIDGET_NEW_CHATS_PER_HOUR` per agency (default 30) and `WIDGET_MESSAGES_PER_DAY` per visitor (default 40).
 
 Chats the AI handed over appear on **Leads** under **Needs you** (shown only while there are some) and sort first everywhere else. While a person has a chat, each new message from the lead is emailed to the agency's alert email and the assigned agent, so a reply is never missed.
 

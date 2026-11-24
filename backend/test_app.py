@@ -321,7 +321,7 @@ state = app.urllib.parse.unquote(state)
 assert c.get("/api/connectors/gmail/start", headers=pr).status_code == 403
 assert c.post("/api/connectors/gmail/callback", json={"code": "c", "state": state}, headers=hb).status_code == 400, "not B's state"
 assert c.post("/api/connectors/outlook/callback", json={"code": "c", "state": state}, headers=ha).status_code == 400, "wrong connector"
-assert c.post("/api/connectors/gmail/callback", json={"code": "c", "state": state[:-1] + "0"}, headers=ha).status_code == 400
+assert c.post("/api/connectors/gmail/callback", json={"code": "c", "state": state[:-1] + ("1" if state[-1] == "0" else "0")}, headers=ha).status_code == 400
 routes["oauth2.googleapis.com/token"] = {"access_token": "ga1", "refresh_token": "gr1", "expires_in": 3600}
 routes["gmail.googleapis.com/gmail/v1/users/me/profile"] = {"emailAddress": "leads@sunrise.test"}
 assert c.post("/api/connectors/gmail/callback", json={"code": "c", "state": state}, headers=ha).json()["account"] == "leads@sunrise.test"
@@ -610,6 +610,57 @@ with app.db() as conn:  # that hour is now taken for the same agent, and while u
     assert slots[0] not in app.free_slots(conn, {**other, "agent_id": vl["agent_id"]})
     assert slots[0] not in app.free_slots(conn, {**other, "agent_id": None})
     assert slots[0] in app.free_slots(conn, {**other, "agent_id": -1}, limit=50)
+
+# ---------- Website chat widget ----------
+import re  # noqa: E402
+def widget_key(h):
+    snippet = c.get("/api/connectors", headers=h).json()["widget"]
+    assert snippet.startswith('<script src="http') and "/widget.js" in snippet
+    return re.search(r'data-leaddesk="([^"]+)"', snippet)[1]
+ka, kb = widget_key(ha), widget_key(hb)
+V1, V2 = "visitor-aaaaaaaaaaaa1", "visitor-bbbbbbbbbbbb2"
+def chat(text, v=V1, k=ka, **who):
+    return c.post(f"/widget/{k}/messages", json={"visitor": v, "text": text, **who})
+def seen(v=V1, k=ka, after=0):
+    return c.get(f"/widget/{k}/messages?visitor={v}&after={after}").json()
+assert ka != kb and ka not in c.get("/api/connectors", headers=ha).json()["intake"]["key"], "public key, not the secret one"
+js = c.get("/widget.js")
+assert js.status_code == 200 and "javascript" in js.headers["content-type"] and "textContent" in js.text
+assert c.get(f"/widget/{ka}").json() == {"agency": "Sunrise Realty"} and c.get("/widget/nope").status_code == 404
+pre = c.options(f"/widget/{ka}/messages")
+assert pre.status_code == 204 and pre.headers["access-control-allow-origin"] == "*"
+assert c.get(f"/widget/{ka}").headers["access-control-allow-origin"] == "*"
+assert "access-control-allow-origin" not in c.get("/api/settings", headers=ha).headers, "the dashboard API stays closed"
+assert seen() == {"started": False, "messages": []}
+assert chat("Hi").status_code == 422, "name and phone or email first"
+assert chat("Hi", v="short").status_code == 422
+app.qualify = lambda lead, business, listings: (prompts.append((business, listings)),
+                                                result(score="cold", reply="Hello! How can we help?"))[1]
+assert chat("Do you have flats in Riverside?", name="Kiran Joshi", contact="+91 90000 88888").status_code == 202
+kl = c.get("/api/leads?view=all&q=Kiran", headers=ha).json()["leads"][0]
+assert kl["source"] == "Website chat" and kl["channel"] == "web" and kl["send_via"] == "web" and kl["contact"] == "+91 90000 88888"
+assert "short chat message" in prompts[-1][0] and "short chat message" not in prompts[0][0], "chat-style only in the chat"
+assert [(m["from"], m["text"]) for m in seen()["messages"]] == [("you", "Do you have flats in Riverside?"),
+    ("agency", "Hello! How can we help?")], "someone waiting in the chat gets the reply even when cold"
+app.qualify = ok
+assert seen(v=V2)["messages"] == [] and seen(k=kb)["messages"] == [], "another visitor, or agency, sees nothing"
+script[:] = [says("Yes: Lake View 2BHK in Riverside, ₹85 L. Would you like to visit?")]
+after = seen()["messages"][-1]["id"]
+assert chat("Yes, 2BHK please").status_code == 202, "no name needed once the chat has started"
+assert [m["text"] for m in seen(after=after)["messages"]] == ["Yes, 2BHK please", "Yes: Lake View 2BHK in Riverside, ₹85 L. Would you like to visit?"]
+assert c.post(f"/api/leads/{kl['id']}/send", json={"text": "Ravi here, happy to help.", "kind": "reply"}, headers=ha).status_code == 200
+assert seen()["messages"][-1] == {**seen()["messages"][-1], "from": "agency", "text": "Ravi here, happy to help."}, \
+    "a person's reply from the dashboard shows in the chat"
+assert get(kl["id"])["ai_mode"] == "off"
+n_mail = len(sent_emails)
+chat("Thanks Ravi")
+assert "wrote back" in sent_emails[-1]["Subject"] and len(sent_emails) > n_mail
+app.WIDGET_MESSAGES_PER_DAY = 3
+assert chat("one more").status_code == 429, "per-visitor daily limit"
+app.WIDGET_MESSAGES_PER_DAY, app.WIDGET_NEW_CHATS_PER_HOUR = 40, 1
+assert chat("Hello", v=V2, name="Spam", contact="spam@x.com").status_code == 429, "per-agency new chats per hour"
+assert chat("Hello", v=V2, k=kb, name="Lena", contact="lena@x.com").status_code == 202, "B has its own limit"
+app.WIDGET_NEW_CHATS_PER_HOUR = 30
 c.patch("/api/agency", json={"ai_agent": False}, headers=ha)
 
 # ---------- Reports ----------

@@ -44,7 +44,7 @@ export type Lead = {
   send_error: string | null
   /** Where LeadDesk can send messages to this lead; null means copy the reply and send it yourself. */
   send_via: SendVia | null
-  channel: "instagram" | "messenger" | null
+  channel: "instagram" | "messenger" | "web" | null
   /** Who answers this lead's chat messages: the AI, a person who took over, or a person because the AI handed over. */
   ai_mode: "on" | "off" | "handoff"
   /** The agency has the AI conversation turned on in Settings. */
@@ -52,8 +52,13 @@ export type Lead = {
   last_inbound_at: string | null
 }
 
-export type SendVia = "whatsapp" | "instagram" | "messenger"
-export const SEND_VIA_LABEL: Record<SendVia, string> = { whatsapp: "WhatsApp", instagram: "Instagram", messenger: "Messenger" }
+export type SendVia = "whatsapp" | "instagram" | "messenger" | "web"
+export const SEND_VIA_LABEL: Record<SendVia, string> = {
+  whatsapp: "WhatsApp",
+  instagram: "Instagram",
+  messenger: "Messenger",
+  web: "Website chat",
+}
 
 export type Listing = {
   id: number
@@ -203,6 +208,8 @@ export type Connectors = {
   connectors: Partial<Record<ConnectorKind, Connector>>
   inbound_address: string | null
   intake: { url: string; key: string }
+  /** The one-line <script> tag that puts the LeadDesk chat on the agency's website. */
+  widget: string
   default_senders: string
   inbox: InboxItem[]
 }
