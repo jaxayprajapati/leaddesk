@@ -487,10 +487,12 @@ VIEWS = {
     "new": "stage='new'",                    # dashboard "To contact" tab: includes leads needing review
     "closed": "stage IN ('won','lost')",
     "followup": FOLLOWUP_DUE,                # contacted leads whose next follow-up is due
+    "handoff": "ai_mode='handoff' AND stage IN ('new','contacted','visit')",  # the AI handed the chat to a person
 }
-View = Literal["todo", "review", "contacted", "visits", "won", "lost", "all", "new", "closed", "followup"]
-# Who to act on first: due follow-ups, needs review, hot, still analyzing, warm, cold; newest first within each.
-ORDER = f"""CASE WHEN {FOLLOWUP_DUE} THEN 0 ELSE 1 END,
+View = Literal["todo", "review", "contacted", "visits", "won", "lost", "all", "new", "closed", "followup", "handoff"]
+# Who to act on first: chats the AI handed over, due follow-ups, needs review, hot, still analyzing, warm, cold;
+# newest first within each.
+ORDER = f"""CASE WHEN {VIEWS['handoff']} THEN 0 WHEN {FOLLOWUP_DUE} THEN 1 ELSE 2 END,
            CASE WHEN status='needs_review' THEN 0 WHEN score='hot' THEN 1 WHEN status='processing' THEN 2
            WHEN score='warm' THEN 3 ELSE 4 END, id DESC"""
 ORDERS = {"visits": "CASE visit_status WHEN 'booked' THEN 0 ELSE 1 END, visit_at ASC"}
@@ -1168,12 +1170,19 @@ def handle_incoming(lead_id: int, merged: bool) -> None:
     otherwise the message is read as an enquiry, as before."""
     with db() as conn:
         conn.execute("UPDATE leads SET last_inbound_at=? WHERE id=?", (utcnow(), lead_id))
-        r = conn.execute("""SELECT l.ai_mode, l.score, l.contacted_at, g.ai_agent FROM leads l JOIN agencies g ON g.id=l.agency_id
-                            WHERE l.id=?""", (lead_id,)).fetchone()
+        r = conn.execute("""SELECT l.name, l.contact, l.ai_mode, l.score, l.contacted_at, g.ai_agent FROM leads l
+                            JOIN agencies g ON g.id=l.agency_id WHERE l.id=?""", (lead_id,)).fetchone()
         talking = bool(merged and r["ai_agent"] and r["ai_mode"] == "on" and r["score"] and r["contacted_at"])
         if talking:  # save_lead queued it for re-reading; the AI updates the details itself instead
             conn.execute("UPDATE leads SET status='ready', error=NULL WHERE id=?", (lead_id,))
-    converse(lead_id) if talking else process_lead(lead_id)
+        text = conn.execute("SELECT body FROM events WHERE lead_id=? AND kind='in' ORDER BY id DESC LIMIT 1", (lead_id,)).fetchone()[0]
+    if talking:
+        return converse(lead_id)
+    process_lead(lead_id)
+    if merged and r["ai_agent"] and r["ai_mode"] != "on":  # a person has this chat, so make sure they see the reply
+        link = f"{DASHBOARD_URL}/leads?id={lead_id}"
+        notify(lead_id, f"{r['name']} wrote back: reply in LeadDesk", f"{r['name']} ({r['contact']}) wrote:\n{text}\n\n{link}",
+               {"message": {"lead_id": lead_id, "name": r["name"], "text": text, "url": link}})
 
 
 # ---------- Lead intake ----------

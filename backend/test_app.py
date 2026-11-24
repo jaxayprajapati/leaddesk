@@ -530,9 +530,16 @@ assert "needs a person" in sent_emails[-1]["Subject"] and "negotiate" in sent_em
 calls_before = len(agent_calls)
 wa_msg("Hello?", "wamid.in6")
 assert len(agent_calls) == calls_before and get(mid)["enquiries"] == 6, "handed over: no AI reply, message still kept"
+assert "Zoya Kapoor wrote back" in sent_emails[-1]["Subject"] and "Hello?" in sent_emails[-1].get_content(), \
+    "whoever has the chat now is told the lead wrote"
+handed = c.get("/api/leads?view=handoff", headers=ha).json()
+assert [l["id"] for l in handed["leads"]] == [mid] and handed["counts"]["handoff"] == 1
+assert c.get("/api/leads?view=all", headers=ha).json()["leads"][0]["id"] == mid, "handed-over chats sort first"
+assert c.get("/api/leads?view=handoff", headers=hb).json()["counts"]["handoff"] == 0
 assert c.post(f"/api/leads/{mid}/ai", json={"mode": "on"}, headers=hb).status_code == 404, "B can't touch A's lead"
 assert c.post(f"/api/leads/{mid}/ai", json={"mode": "bogus"}, headers=ha).status_code == 422
 assert c.post(f"/api/leads/{mid}/ai", json={"mode": "on"}, headers=ha).json()["ai_mode"] == "on"
+assert c.get("/api/leads?view=handoff", headers=ha).json()["counts"]["handoff"] == 0
 
 # If the AI fails, the lead is handed to a person instead of being left unanswered.
 script[:] = [RuntimeError("overloaded")]
@@ -547,6 +554,10 @@ assert get(mid)["ai_mode"] == "handoff", "a refusal hands over too"
 c.post(f"/api/leads/{mid}/ai", json={"mode": "on"}, headers=ha)
 c.post(f"/api/leads/{mid}/send", json={"text": "Hi Zoya, Ravi here.", "kind": "reply"}, headers=ha)
 assert get(mid)["ai_mode"] == "off" and kinds_of(mid)[-1] == "ai_mode"
+calls_before, n_mail = len(agent_calls), len(sent_emails)
+wa_msg("Great, thanks Ravi", "wamid.in8b")
+assert len(agent_calls) == calls_before and "wrote back" in sent_emails[-1]["Subject"] and len(sent_emails) > n_mail, \
+    "a person has the chat: the AI stays out, the person is told"
 c.post(f"/api/leads/{mid}/ai", json={"mode": "on"}, headers=ha)
 app.AGENT_DAILY_REPLIES, calls_before = 2, len(agent_calls)
 wa_msg("thanks", "wamid.in9")

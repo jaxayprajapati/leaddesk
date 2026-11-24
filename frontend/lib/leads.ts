@@ -2,7 +2,7 @@
 
 export type Score = "hot" | "warm" | "cold"
 export type Stage = "new" | "contacted" | "visit" | "won" | "lost"
-export type View = "todo" | "review" | "contacted" | "won" | "lost" | "all" | "new" | "closed" | "followup" | "visits"
+export type View = "todo" | "review" | "contacted" | "won" | "lost" | "all" | "new" | "closed" | "followup" | "visits" | "handoff"
 
 export type Lead = {
   id: number

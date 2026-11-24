@@ -119,6 +119,8 @@ Turn on **Let the AI carry on the conversation** in **Settings**. After the firs
 
 Safeguards: the AI's tools act only on the lead being answered (they take no ids), a person replying from LeadDesk pauses the AI for that lead, any AI or sending failure hands the lead over instead of leaving them unanswered, and the AI sends at most `AGENT_DAILY_REPLIES` (default 20) replies per lead per day. Every message and every change is in the lead's history. On each lead, **Take over** and **Let the AI answer** switch it by hand.
 
+Chats the AI handed over appear on **Leads** under **Needs you** (shown only while there are some) and sort first everywhere else. While a person has a chat, each new message from the lead is emailed to the agency's alert email and the assigned agent, so a reply is never missed.
+
 ## Tests
 
 ```powershell

@@ -18,6 +18,7 @@ export const metadata: Metadata = { title: "Leads" }
 
 // Plain buckets in the order work happens: reply, follow up, show the property, close.
 const TABS = [
+  { key: "handoff", label: "Needs you", empty: "No chats waiting. When the AI hands a chat to your team, it shows up here." },
   { key: "new", label: "To contact", empty: "You're all caught up. New enquiries appear here within seconds." },
   { key: "contacted", label: "Contacted", empty: "Leads you've replied to show up here. Due follow-ups come first." },
   { key: "visits", label: "Visits", empty: "Booked site visits show up here, soonest first." },
@@ -89,7 +90,8 @@ export default async function LeadsPage({ searchParams }: { searchParams: Promis
           </p>
         ) : (
           <nav aria-label="Lead status" className="mt-4 flex gap-6">
-            {TABS.map((t) => {
+            {/* "Needs you" only appears while the AI has handed chats over, so agencies not using the AI never see it */}
+            {TABS.filter((t) => t.key !== "handoff" || !!data?.counts.handoff || tab === "handoff").map((t) => {
               const active = t.key === tab
               return (
                 <Link
@@ -103,6 +105,11 @@ export default async function LeadsPage({ searchParams }: { searchParams: Promis
                 >
                   {t.label}
                   {/* Only the bucket that needs action gets a count */}
+                  {t.key === "handoff" && !!data?.counts.handoff && (
+                    <span className="rounded-full bg-review px-1.5 text-xs font-medium text-white tabular-nums">
+                      {data.counts.handoff}
+                    </span>
+                  )}
                   {t.key === "new" && !!data?.counts.new && (
                     <span className="rounded-full bg-primary px-1.5 text-xs font-medium text-primary-foreground tabular-nums">
                       {data.counts.new}
@@ -196,8 +203,10 @@ function LeadRow({ lead, href, active }: { lead: Lead; href: string; active: "al
             ? "Visited · decide next step"
             : "Missed the visit"
       : null
-  const what =
-    visit === "visit" ? (
+  const handedOver = lead.ai_agent && lead.ai_mode === "handoff" && lead.stage !== "won" && lead.stage !== "lost"
+  const what = handedOver ? (
+    "The AI handed this chat to you"
+  ) : visit === "visit" ? (
       <>
         Visit <LocalTime iso={lead.visit_at!} />
       </>
@@ -235,7 +244,7 @@ function LeadRow({ lead, href, active }: { lead: Lead; href: string; active: "al
           <span
             className={cn(
               "mt-0.5 block truncate text-sm text-muted-foreground",
-              lead.status === "needs_review" && "text-review",
+              (lead.status === "needs_review" || handedOver) && "text-review",
               (lead.followup_due || visit === "Visit done? Update it") && "font-medium text-primary"
             )}
           >
