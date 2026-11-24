@@ -6,6 +6,7 @@ import {
   CalendarXIcon,
   CheckIcon,
   CircleAlertIcon,
+  HandIcon,
   RotateCwIcon,
   SparklesIcon,
   UserRoundIcon,
@@ -82,6 +83,30 @@ function Note({ event: e }: { event: LeadEvent }) {
         return { icon: SparklesIcon, text: <>The AI read it: {String(m.score ?? "").replace(/^./, (c) => c.toUpperCase())} lead</> }
       case "ai_failed":
         return { icon: CircleAlertIcon, tone: "text-review", text: <>The AI couldn&apos;t read it</> }
+      case "ai_update": {
+        const NAMES: Record<string, string> = { lead_type: "type", property_type: "property" }
+        const what = Object.entries(m)
+          .filter(([k]) => k !== "summary" && k !== "reconstructed")
+          .map(([k, v]) => `${NAMES[k] ?? k} ${String(v)}`)
+        return {
+          icon: SparklesIcon,
+          text: <>The AI noted {what.length ? what.join(", ") : "a new summary"} from the chat</>,
+        }
+      }
+      case "handoff":
+        return { icon: HandIcon, tone: "text-review", text: <>The AI handed the chat to the team: {e.body}</> }
+      case "ai_mode":
+        return {
+          icon: m.mode === "on" ? BotIcon : HandIcon,
+          text:
+            m.mode === "on" ? (
+              <>The AI was asked to answer again{by(e.actor)}</>
+            ) : (
+              <>
+                {e.actor ?? "A person"} took over the chat{m.reason ? ` (${m.reason})` : ""}
+              </>
+            ),
+        }
       case "retry":
         return { icon: RotateCwIcon, text: <>Sent to the AI again{by(e.actor)}</> }
       case "assigned":

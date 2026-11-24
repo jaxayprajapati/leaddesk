@@ -45,6 +45,11 @@ export type Lead = {
   /** Where LeadDesk can send messages to this lead; null means copy the reply and send it yourself. */
   send_via: SendVia | null
   channel: "instagram" | "messenger" | null
+  /** Who answers this lead's chat messages: the AI, a person who took over, or a person because the AI handed over. */
+  ai_mode: "on" | "off" | "handoff"
+  /** The agency has the AI conversation turned on in Settings. */
+  ai_agent: boolean
+  last_inbound_at: string | null
 }
 
 export type SendVia = "whatsapp" | "instagram" | "messenger"
@@ -91,7 +96,9 @@ export type LeadList = { counts: Record<View, number>; leads: Lead[] }
 export type LeadEvent = {
   id: number
   at: string
-  kind: "in" | "out" | "send_failed" | "ai" | "ai_failed" | "stage" | "assigned" | "visit" | "visit_outcome" | "followup_marked" | "reminder" | "retry"
+  kind:
+    | "in" | "out" | "send_failed" | "ai" | "ai_failed" | "stage" | "assigned" | "visit" | "visit_outcome" | "followup_marked"
+    | "reminder" | "retry" | "ai_update" | "handoff" | "ai_mode"
   /** A person's name, or "LeadDesk" for automatic steps. */
   actor: string | null
   channel: string | null
@@ -143,6 +150,7 @@ export type Agency = {
   alert_webhook: string | null
   auto_reply: Score[]
   auto_follow_ups: boolean
+  ai_agent: boolean
   country: string
   currency: string
   timezone: string

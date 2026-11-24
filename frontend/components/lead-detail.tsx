@@ -24,6 +24,7 @@ import {
   followUpSent,
   retryLead,
   sendMessage,
+  setAiMode,
   setStage,
   visitOutcome,
 } from "@/app/actions"
@@ -307,6 +308,41 @@ export function LeadDetail({
               </span>
             </p>
           )}
+
+        {/* Who answers this chat: the AI, or a person. Only for chats LeadDesk can reply in, at agencies using the AI. */}
+        {lead.ai_agent && lead.send_via && !closed && (
+          <div
+            className={cn(
+              "mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border px-4 py-3 text-sm",
+              lead.ai_mode === "handoff" && "border-review/40 bg-review/5"
+            )}
+          >
+            <p className="flex items-center gap-2">
+              {lead.ai_mode === "handoff" ? (
+                <TriangleAlertIcon className="size-4 text-review" />
+              ) : (
+                <BotIcon className="size-4 text-muted-foreground" />
+              )}
+              {lead.ai_mode === "on"
+                ? `The AI is answering ${first}'s messages.`
+                : lead.ai_mode === "handoff"
+                  ? `The AI handed ${first} to your team. Reply below.`
+                  : `Your team is handling ${first}'s messages.`}
+            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={pending}
+              onClick={() =>
+                lead.ai_mode === "on"
+                  ? run(() => setAiMode(lead.id, "off"), `You're handling ${first} now`)
+                  : run(() => setAiMode(lead.id, "on"), `The AI will answer ${first}'s next message`)
+              }
+            >
+              {lead.ai_mode === "on" ? "Take over" : "Let the AI answer"}
+            </Button>
+          </div>
+        )}
 
         {/* The whole history: their messages, what was sent back, and every change. Falls back to the enquiry alone. */}
         {events && events.length > 0 ? (

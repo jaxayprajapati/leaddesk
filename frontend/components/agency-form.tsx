@@ -36,6 +36,7 @@ export function AgencyForm({ agency }: { agency: Agency }) {
         alert_webhook: v("alert_webhook"),
         auto_reply: SCORES.map((s) => s.key).filter((k) => f.get(`auto_${k}`)),
         auto_follow_ups: !!f.get("auto_follow_ups"),
+        ai_agent: !!f.get("ai_agent"),
         country: v("country"),
         currency: v("currency").toUpperCase(),
         timezone: v("timezone"),
@@ -89,6 +90,17 @@ export function AgencyForm({ agency }: { agency: Agency }) {
             <span>
               Send follow-ups on WhatsApp automatically
               <span className="block text-muted-foreground">On day 1, 3 and 7 after the first reply, if the lead hasn&apos;t moved on.</span>
+            </span>
+          </label>
+          <label className="flex cursor-pointer items-start gap-2.5 text-sm">
+            <Checkbox name="ai_agent" defaultChecked={agency.ai_agent} className="mt-0.5" />
+            <span>
+              Let the AI carry on the conversation
+              <span className="block text-muted-foreground">
+                When a lead replies on WhatsApp, Instagram or Messenger, the AI answers from your profile and listings, notes
+                what they want, and hands the chat to your team when it needs a person. It steps back as soon as someone on
+                your team replies.
+              </span>
             </span>
           </label>
         </section>

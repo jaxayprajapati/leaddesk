@@ -63,6 +63,12 @@ export async function sendMessage(id: number, text: string, kind: "reply" | "fol
   )
 }
 
+/** Let the AI answer this lead's chat messages again, or keep it out of the conversation. */
+export async function setAiMode(id: number, mode: "on" | "off") {
+  await api(`/api/leads/${Number(id)}/ai`, { method: "POST", body: JSON.stringify({ mode }) })
+  done()
+}
+
 export async function assignLead(id: number, agentId: number | null) {
   await api(`/api/leads/${Number(id)}/assign`, { method: "POST", body: JSON.stringify({ agent_id: agentId }) })
   done()

@@ -449,6 +449,116 @@ c = TestClient(app.app)
 rebuilt = c.get(f"/api/leads/{wid}/events", headers=ha).json()
 assert rebuilt[0]["kind"] == "in" and all(e["meta"].get("reconstructed") for e in rebuilt)
 
+# ---------- WhatsApp messages in, and the AI conversation agent ----------
+from types import SimpleNamespace as NS  # noqa: E402
+def wa_msg(text, mid, sender="919000055555", phone_id="5551234", name="Zoya Kapoor"):
+    return meta_post({"object": "whatsapp_business_account", "entry": [{"id": "WABA1", "changes": [{"field": "messages", "value": {
+        "metadata": {"phone_number_id": phone_id}, "contacts": [{"wa_id": sender, "profile": {"name": name}}],
+        "messages": [{"from": sender, "id": mid, "type": "text", "text": {"body": text}}]}}]}]})
+def wa_sent():
+    return sent_to("/5551234/messages")[-1]
+def meera():
+    return c.get("/api/leads?view=all&q=Zoya", headers=ha).json()["leads"]
+def kinds_of(lid):
+    return [e["kind"] for e in c.get(f"/api/leads/{lid}/events", headers=ha).json()]
+agent_calls, script = [], []
+def fake_agent(system, messages):
+    agent_calls.append((system, [dict(m) for m in messages]))
+    step = script.pop(0)
+    if isinstance(step, Exception):
+        raise step
+    return step
+def says(text):
+    return NS(stop_reason="end_turn", content=[NS(type="thinking", thinking=""), NS(type="text", text=text)])
+def uses(name, **args):
+    return NS(stop_reason="tool_use", content=[NS(type="tool_use", id=f"t{len(agent_calls)}", name=name, input=args)])
+NONE = dict(score=None, lead_type=None, property_type=None, location=None, budget=None, timeline=None, summary=None)
+app.call_agent = fake_agent
+
+assert wa_msg("Hi, any 3BHK in Riverside?", "wamid.in1").status_code == 200
+m = meera()
+assert len(m) == 1 and m[0]["source"] == "WhatsApp" and m[0]["contact"] == "+919000055555" and m[0]["ai_mode"] == "on"
+assert m[0]["stage"] == "contacted" and wa_sent() == {"messaging_product": "whatsapp", "to": "919000055555", "type": "text",
+    "text": {"body": "Hi! Let's book a call."}}, "the lead just wrote, so the reply goes as a plain message, not a template"
+wa_msg("Hi, any 3BHK in Riverside?", "wamid.in1")  # Meta retries
+wa_msg("ignored", "wamid.x", phone_id="999")         # a number no agency connected
+assert meta_post({"object": "whatsapp_business_account", "entry": [{"changes": [{"field": "messages", "value": {
+    "metadata": {"phone_number_id": "5551234"}, "statuses": [{"id": "wamid.1", "status": "read"}]}}]}]}).status_code == 200
+assert meera()[0]["enquiries"] == 1 and not agent_calls, "retries, unknown numbers and read receipts change nothing"
+
+# With the agent off (the default), a reply is read again as before and nobody answers it automatically.
+n_out = len(sent_to("/5551234/messages"))
+wa_msg("Budget around 1.2 Cr", "wamid.in2")
+assert meera()[0]["enquiries"] == 2 and len(sent_to("/5551234/messages")) == n_out and not agent_calls
+assert c.get("/api/settings", headers=ha).json()["agency"]["ai_agent"] is False
+assert c.patch("/api/agency", json={"ai_agent": True}, headers=ha).json()["agency"]["ai_agent"] is True
+assert c.get("/api/settings", headers=hb).json()["agency"]["ai_agent"] is False, "only A turned it on"
+assert c.patch("/api/agency", json={"ai_agent": True}, headers=pr).status_code == 403, "owner only"
+
+# The agent saves what it learns and answers in the chat.
+mid = meera()[0]["id"]
+script[:] = [uses("update_lead", **{**NONE, "budget": "1.2 Cr", "location": "Riverside", "score": "hot"}),
+             says("Riverside Heights 3BHK is ₹1.15 Cr. Would Saturday suit you for a visit?")]
+n_mail = len(sent_emails)
+wa_msg("Can I visit this weekend? Budget 1.2 Cr", "wamid.in3")
+lm = get(mid)
+assert lm["budget"] == "1.2 Cr" and lm["status"] == "ready" and lm["enquiries"] == 3 and not script
+assert wa_sent()["text"]["body"].startswith("Riverside Heights") and wa_sent()["type"] == "text"
+system, msgs = agent_calls[0]
+assert "Agency name: Sunrise Realty" in system[0]["text"] and "Blue Door" not in system[0]["text"], "A's own profile"
+assert system[0]["cache_control"] == {"type": "ephemeral"} and "Zoya" in system[1]["text"]
+assert [x["role"] for x in msgs] == ["user", "assistant", "user"] and "Budget around 1.2 Cr" in msgs[2]["content"] \
+    and "weekend" in msgs[2]["content"], "the whole chat, messages in a row joined"
+assert not any("id" in t["input_schema"]["properties"] for t in app.AGENT_TOOLS), "tools take no ids"
+ev = c.get(f"/api/leads/{mid}/events", headers=ha).json()
+upd = next(e for e in ev if e["kind"] == "ai_update")
+assert upd["meta"] == {"budget": "1.2 Cr"}, "only what changed (it was already hot, in Riverside)"
+assert ev[-1]["kind"] == "out" and ev[-1]["meta"]["kind"] == "AI reply" and ev[-1]["actor"] == "LeadDesk"
+assert len(sent_emails) == n_mail, "already hot, so no second hot-lead alert"
+
+# A bad tool call is reported back to the AI, which carries on.
+script[:] = [uses("update_lead", **{**NONE, "score": "boiling"}), says("Noted.")]
+wa_msg("ok", "wamid.in4")
+assert agent_calls[-1][1][-1]["content"][0]["is_error"] is True and wa_sent()["text"]["body"] == "Noted."
+
+# The AI hands over: the team is told, the lead gets a holding message, and the AI goes quiet.
+script[:] = [uses("hand_off", reason="Wants to negotiate the price"), says("A colleague will reply shortly.")]
+wa_msg("Can you do 1 Cr?", "wamid.in5")
+lm = get(mid)
+assert lm["ai_mode"] == "handoff" and wa_sent()["text"]["body"] == "A colleague will reply shortly."
+assert "needs a person" in sent_emails[-1]["Subject"] and "negotiate" in sent_emails[-1].get_content()
+calls_before = len(agent_calls)
+wa_msg("Hello?", "wamid.in6")
+assert len(agent_calls) == calls_before and get(mid)["enquiries"] == 6, "handed over: no AI reply, message still kept"
+assert c.post(f"/api/leads/{mid}/ai", json={"mode": "on"}, headers=hb).status_code == 404, "B can't touch A's lead"
+assert c.post(f"/api/leads/{mid}/ai", json={"mode": "bogus"}, headers=ha).status_code == 422
+assert c.post(f"/api/leads/{mid}/ai", json={"mode": "on"}, headers=ha).json()["ai_mode"] == "on"
+
+# If the AI fails, the lead is handed to a person instead of being left unanswered.
+script[:] = [RuntimeError("overloaded")]
+wa_msg("Still there?", "wamid.in7")
+assert get(mid)["ai_mode"] == "handoff" and kinds_of(mid)[-2:] == ["ai_failed", "handoff"]
+c.post(f"/api/leads/{mid}/ai", json={"mode": "on"}, headers=ha)
+script[:] = [NS(stop_reason="refusal", content=[])]
+wa_msg("?", "wamid.in8")
+assert get(mid)["ai_mode"] == "handoff", "a refusal hands over too"
+
+# A person replying takes over; the daily limit hands over; outside 24 hours WhatsApp needs the template again.
+c.post(f"/api/leads/{mid}/ai", json={"mode": "on"}, headers=ha)
+c.post(f"/api/leads/{mid}/send", json={"text": "Hi Zoya, Ravi here.", "kind": "reply"}, headers=ha)
+assert get(mid)["ai_mode"] == "off" and kinds_of(mid)[-1] == "ai_mode"
+c.post(f"/api/leads/{mid}/ai", json={"mode": "on"}, headers=ha)
+app.AGENT_DAILY_REPLIES, calls_before = 2, len(agent_calls)
+wa_msg("thanks", "wamid.in9")
+assert get(mid)["ai_mode"] == "handoff" and len(agent_calls) == calls_before and "daily limit" in \
+    c.get(f"/api/leads/{mid}/events", headers=ha).json()[-1]["body"]
+app.AGENT_DAILY_REPLIES = 20
+with app.db() as conn:
+    conn.execute("UPDATE leads SET last_inbound_at=? WHERE id=?", ((datetime.now(timezone.utc) - timedelta(days=2)).isoformat(), mid))
+c.post(f"/api/leads/{mid}/send", json={"text": "Any update?", "kind": "followup"}, headers=ha)
+assert wa_sent()["type"] == "template", "the 24-hour window has closed"
+c.patch("/api/agency", json={"ai_agent": False}, headers=ha)
+
 # ---------- Reports ----------
 month = datetime.now(timezone.utc).strftime("%Y-%m")
 rep = c.get(f"/api/report?month={month}", headers=ha).json()

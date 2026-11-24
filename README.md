@@ -104,7 +104,19 @@ Set these in `backend/.env`, then restart. A connector without its settings show
 
 ## WhatsApp Business
 
-Without it, **Send on WhatsApp** opens the agent's own WhatsApp with the message ready. To connect: in the agency's Meta Business account, set up the WhatsApp Cloud API, verify the number, create a permanent access token, and get a message template approved whose body has two variables, for example `Hello {{1}}, {{2}}` (first name, message). Paste the phone number ID, token and template name on **Connectors**; LeadDesk checks them with Meta before saving. Every outgoing message uses this template, because WhatsApp requires one for the first message to someone. Meta charges per conversation.
+Without it, **Send on WhatsApp** opens the agent's own WhatsApp with the message ready. To connect: in the agency's Meta Business account, set up the WhatsApp Cloud API, verify the number, create a permanent access token, and get a message template approved whose body has two variables, for example `Hello {{1}}, {{2}}` (first name, message). Paste the phone number ID, token and template name on **Connectors**; LeadDesk checks them with Meta before saving. WhatsApp only allows a plain message within 24 hours of the person's last message to you; outside that window LeadDesk sends through the approved template. Meta charges per conversation.
+
+**Messages from leads**: in the operator's Meta app, add the WhatsApp product and subscribe its webhook (the same callback URL, `<PUBLIC_API_URL>/webhooks/meta`) to the `messages` field. A message from a new number becomes a lead (source WhatsApp); a message from a number LeadDesk already has joins that lead's history, whatever source it first came from.
+
+## AI conversation
+
+Turn on **Let the AI carry on the conversation** in **Settings**. After the first reply, when the lead writes back on WhatsApp, Instagram or Messenger, the AI:
+
+- answers from the agency's business profile and its own listings only (never invented properties, prices or promises), in the lead's language;
+- saves what it learns (area, property type, budget, timeline, score) to the lead, and alerts the team when a lead turns hot in the chat;
+- **hands the chat to a person** when the lead asks for one, is upset, wants to negotiate, asks about legal or loan matters, or asks something it can't answer. The agency's alert email/webhook and the assigned agent are told why.
+
+Safeguards: the AI's tools act only on the lead being answered (they take no ids), a person replying from LeadDesk pauses the AI for that lead, any AI or sending failure hands the lead over instead of leaving them unanswered, and the AI sends at most `AGENT_DAILY_REPLIES` (default 20) replies per lead per day. Every message and every change is in the lead's history. On each lead, **Take over** and **Let the AI answer** switch it by hand.
 
 ## Tests
 
@@ -113,11 +125,10 @@ cd backend
 .venv\Scripts\python test_app.py
 ```
 
-They cover sign-up and login, agency isolation for every lead, listing, team and connector endpoint, all six connectors (with fake Google, Microsoft and Meta APIs), alerts, follow-ups, visits and reports.
+They cover sign-up and login, agency isolation for every lead, listing, team and connector endpoint, all six connectors (with fake Google, Microsoft and Meta APIs), incoming WhatsApp messages, the AI conversation (with a scripted Claude: tool calls, handovers, failures, refusals and the daily limit), alerts, follow-ups, visits and reports.
 
 ## Not built yet
 
 - Billing and plans (sign-up is open; add an invite code or payment before advertising it, since every lead costs an AI call)
 - An operator view across agencies (usage, agencies, support)
-- Reading WhatsApp replies from leads inside LeadDesk
 - Deployment (the backend must be reachable on a public HTTPS address for webhooks, email and OAuth; the frontend can go on Vercel). SQLite and the single background thread suit one server; move to Postgres and a separate worker as agencies grow.
