@@ -92,8 +92,9 @@
       started = d.started
       askWho()
       for (const m of d.messages) {
-        show(m)
+        if (m.id <= last) continue // two checks can overlap (timer and send); show each message once
         last = m.id
+        show(m)
       }
     } catch {} // offline: try again on the next tick
   }
@@ -103,6 +104,7 @@
     openBtn.setAttribute("aria-expanded", String(on))
     clearInterval(timer)
     if (on) {
+      log.scrollTop = log.scrollHeight // a returning visitor's chat was filled while hidden; open at the latest message
       poll()
       timer = setInterval(poll, 3000)
       $("textarea").focus()

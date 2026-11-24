@@ -1,4 +1,56 @@
-# LeadDesk
+# LeadDesk: an AI front desk for real estate agencies
+
+Leads arrive from property portals, Facebook and Instagram, WhatsApp and the agency's own website, at all hours. Agents answer the first few, and the rest go cold. LeadDesk answers every one within seconds: it reads each enquiry, scores it, matches it to the agency's own listings, replies in the lead's language, **carries on the conversation and books the site visit**, and hands the chat to a person the moment one is needed.
+
+![A visitor on an agency's website asks for a 2BHK, gets a matching listing, books a Saturday visit and, when they ask to negotiate, is handed to the team](docs/media/website-chat.gif)
+
+*Real run, not a mock-up: the agency's website with the LeadDesk chat. The AI suggests the right listing, offers open times, books the visit, and hands the price question to a person.*
+
+### What it does
+
+- **One inbox for every source.** Gmail and Outlook (portal emails from 99acres, Zillow, Rightmove and 24 more), a forwarding address, Facebook and Instagram lead ads and DMs, WhatsApp Business, a website chat widget, and any form or Zapier flow.
+- **Reads every lead.** Hot / warm / cold, buyer or renter, area, budget and timeline, the agency's matching listings, and a drafted reply in the lead's own language. Hot leads alert the team at once.
+- **Talks to leads, then books the visit.** On WhatsApp, Instagram, Messenger and the website chat the AI answers questions from the agency's own profile and listings, offers open times within the agency's visit hours (never over another visit), and books the one the lead picks. Day-before reminders follow.
+- **Knows when to step back.** It hands the chat to a person when the lead asks for one, is upset, wants to negotiate, or asks something it can't answer; the team is alerted, and handed-over chats wait under **Needs you**. A person replying pauses the AI for that lead, and any failure hands over instead of leaving the lead unanswered.
+- **Built for many agencies.** Each agency signs up, connects its own sources and sees only its own data; owners and agents have separate access, and the tests check isolation on every endpoint.
+
+### Measured, not claimed
+
+On 46 test enquiries, each run twice (spam, sellers, vague and out-of-area messages, Hindi, Arabic, Spanish, prompt-injection attempts and more), the lead-reading step got **92 of 92 fully right** with Claude Opus 5.5: score, details, listing matches, reply language and no invented prices. That takes about 6 s and $0.02 per lead. [Full results and method](#measured-accuracy).
+
+### How it works
+
+```mermaid
+flowchart LR
+  subgraph Sources
+    P[Portal emails<br/>Gmail · Outlook · forwarding]
+    M[Facebook · Instagram<br/>lead ads and DMs]
+    W[WhatsApp Business]
+    C[Website chat widget]
+    F[Forms · Zapier]
+  end
+  P & M & W & C & F --> API[FastAPI backend<br/>one agency per request]
+  API -->|new lead| R[Claude: read and score<br/>structured output]
+  API -->|reply in a chat| A[Claude: conversation agent<br/>update_lead · find_visit_slots<br/>book_visit · hand_off]
+  API <--> DB[(Leads, listings,<br/>full history)]
+  A -->|replies| W & M & C
+  API -->|hot lead · visit · needs a person| T[Team: email and chat alerts]
+  D[Next.js dashboard] -->|server side, API key| API
+```
+
+The agent's tools act only on the lead being answered (they take no ids), bookings must be a time the slot finder offers right now, and the place comes from the agency's own listings, so the AI can't reach another agency's data, book outside visit hours or invent a property.
+
+| The handed-over chat, with the booked visit and what the AI learned | Every message and change in the lead's history |
+|---|---|
+| ![Needs you tab showing a handed-over lead](docs/media/dashboard-needs-you.jpg) | ![Lead history: visit booked by the AI and the handover](docs/media/dashboard-history.jpg) |
+
+![Settings: let the AI carry on the conversation, and site visit hours](docs/media/settings-ai.jpg)
+
+**Built with:** Python, FastAPI, SQLite · Next.js 16, Tailwind, shadcn/ui · Claude API (Opus 5.5: structured outputs, tool use, prompt caching, server-side fallback) · WhatsApp Cloud API, Meta Graph API, Gmail and Microsoft Graph · Cloudflare Email Workers.
+
+---
+
+## Technical guide
 
 A lead desk for real estate agencies anywhere in the world, run as one service for many agencies (SaaS). Each agency signs up, connects where its leads come from, and gets every enquiry scored **hot / warm / cold** by Claude, matched to its own listings, and answered with a drafted reply in the lead's language. Agents work from one inbox and move leads through **New → Contacted → Site visit → Won / Lost**.
 
