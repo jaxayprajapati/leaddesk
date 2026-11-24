@@ -12,3 +12,8 @@ node_modules/
 _private/
 sales/
 frontend/.git-scaffold-backup/
+# eval output that anyone can regenerate by re-running
+**/traces/
+.claude/hillclimb/**/report.html
+.claude/hillclimb/**/trajectory/
+.claude/hillclimb/**/state.json

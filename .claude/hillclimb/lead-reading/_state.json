@@ -1,0 +1,44 @@
+{
+  "flow": "lead-reading",
+  "metrics": [
+    {
+      "id": "all",
+      "label": "All correct",
+      "kind": "binary"
+    },
+    {
+      "id": "score",
+      "label": "Score right",
+      "kind": "binary"
+    },
+    {
+      "id": "lead_type",
+      "label": "Type right",
+      "kind": "binary"
+    },
+    {
+      "id": "details",
+      "label": "Details right",
+      "kind": "score"
+    },
+    {
+      "id": "listings",
+      "label": "Listings right",
+      "kind": "binary"
+    },
+    {
+      "id": "language",
+      "label": "Reply language",
+      "kind": "binary"
+    },
+    {
+      "id": "grounded",
+      "label": "No made-up $",
+      "kind": "binary"
+    }
+  ],
+  "perf_fields": [
+    "latency_s",
+    "reply_words"
+  ]
+}

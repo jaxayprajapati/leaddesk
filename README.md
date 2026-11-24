@@ -126,6 +126,32 @@ Safeguards: the AI's tools act only on the lead being answered (they take no ids
 
 Chats the AI handed over appear on **Leads** under **Needs you** (shown only while there are some) and sort first everywhere else. While a person has a chat, each new message from the lead is emailed to the agency's alert email and the assigned agent, so a reply is never missed.
 
+## Measured accuracy
+
+Every new lead goes through one AI step: score it hot/warm/cold, pull out what they want, match the agency's listings and draft a reply. `backend/evals/lead_reading/` measures that step on **46 test enquiries** for a fixture agency (9 listings): hot buyers and renters, owners, vague and spam messages, areas and property types the agency doesn't handle, hot leads with no fitting listing, Hindi, Hinglish, Arabic and Spanish, portal emails (99acres, Zillow, Rightmove), website chat, and prompt-injection attempts. Each case was run twice through LeadDesk's real `process_lead`, and graded automatically:
+
+| | Opus 5.5 (default) | Opus 5.5, low effort | Sonnet 5.5 |
+|---|---|---|---|
+| **All checks right** | **100%** (92/92) | 96.7% (89/92) | 97.8% (90/92) |
+| Hot / warm / cold right | 100% | 100% | 100% |
+| Hot leads found · "hot" calls right | 100% · 100% | 100% · 100% | 100% · 100% |
+| Details (area, budget, timeline; nothing made up) | 100% | 100% | 100% |
+| Listings suggested correctly | 100% | 96.7% | 100% |
+| Reply in the lead's language | 100% | 100% | 100% |
+| No invented prices, no leaked instructions, chat style in chat | 100% | 100% | 97.8% |
+| Response time, median (slowest) | 6.3 s (14.4 s) | 4.7 s (6.9 s) | 4.5 s (8.6 s) |
+| Cost per lead | $0.022 | $0.020 | $0.011 |
+
+For comparison, answering "hot" every time would score 59% on the score check. What the misses were: Opus at low effort suggested a listing in the wrong area (3 times); Sonnet ended a website-chat reply with a letter-style sign-off (2 times). With 92 answers per setup, differences of a few points are within noise (about ±3–4 points).
+
+The test enquiries and their expected answers were written by hand (by Claude) from the scoring rules in the prompt, not taken from any model's output; see `cases.md`. Run it yourself (each run costs about $1–2 on your API key):
+
+```powershell
+cd backend
+.venv\Scripts\python evals\lead_reading\run_eval.py --selfcheck            # checks the grader itself, free
+.venv\Scripts\python evals\lead_reading\run_eval.py --variant baseline --reps 2
+```
+
 ## Tests
 
 ```powershell
